@@ -148,11 +148,16 @@ def build(image_set, args):
     root = Path(args.coco_path)
     assert root.exists(), f'provided COCO path {root} does not exist'
     mode = 'instances'
+    new_root='/home/csci8980/chada022/detr'
     PATHS = {
-        "train": (root / "train2017", root / "annotations" / f'{mode}_train2017.json'),
-        "val": (root / "val2017", root / "annotations" / f'{mode}_val2017.json'),
+        "train": (root / "train", root / "annotations" / f'{mode}_train2017.json'),
+        "val": (root / "val", root / "annotations" / f'{mode}_val2017.json'),
     }
 
     img_folder, ann_file = PATHS[image_set]
+    if image_set=="train":
+        ann_file="/home/csci8980/chada022/detr/annotations/instances_train2017.json"
+    elif image_set=="val":
+        ann_file="/home/csci8980/chada022/detr/annotations/instances_val2017.json"
     dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set), return_masks=args.masks)
     return dataset

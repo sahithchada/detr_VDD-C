@@ -84,7 +84,7 @@ def get_args_parser():
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
 
-    parser.add_argument('--output_dir', default='',
+    parser.add_argument('--output_dir', default='trained_models/',
                         help='path where to save, empty for no saving')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
@@ -93,7 +93,7 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--num_workers', default=2, type=int)
+    parser.add_argument('--num_workers', default=1, type=int)
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -121,9 +121,41 @@ def main(args):
     model, criterion, postprocessors = build_model(args)
     model.to(device)
 
+    num_classes_new = 3  # for example, 1 class of interest + 1 for background + 1 additional class
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        model.module.class_embed = torch.nn.Linear(model.module.class_embed.in_features, num_classes_new)
+        model.module.class_embed.to(device)
+        # for name, param in model.module.named_parameters():
+        #     if 'class_embed' in name or 'bbox_embed' in name:
+        #         param.requires_grad = True
+        #     else:
+        #         # Keep other parameters frozen
+        #         param.requires_grad = False
+        # Freeze all layers except the final classification layer
+        # for param in model.module.parameters():
+        #     param.requires_grad = False
+        # for param in model.module.class_embed.parameters():
+        #     param.requires_grad = True
+
+        # Update the optimizer
+        optimizer = torch.optim.AdamW(model.module.class_embed.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    else:
+        model.class_embed = torch.nn.Linear(model.class_embed.in_features, num_classes_new)
+        model.class_embed.to(device)
+        # for name, param in model.named_parameters():
+        #     if 'class_embed' in name or 'bbox_embed' in name:
+        #         param.requires_grad = True
+        #     else:
+        #         # Keep other parameters frozen
+        #         param.requires_grad = False
+        # Freeze all layers except the final classification layer
+        # for param in model.parameters():
+        #     param.requires_grad = False
+        # for param in model.class_embed.parameters():
+        #     param.requires_grad = True
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu],find_unused_parameters=True)
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
@@ -175,7 +207,16 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        num_classes_new = 3  # 1 class of interest + 1 for background
+        model_without_ddp.class_embed = torch.nn.Linear(model_without_ddp.class_embed.in_features, num_classes_new)
+        model_without_ddp.class_embed = model_without_ddp.class_embed.to('cuda')
+
+        # Load the state dict, excluding the modified layer
+        model_without_ddp.load_state_dict({k: v for k, v in checkpoint['model'].items() if 'class_embed' not in k}, strict=False)
+        # empty_weight = torch.ones(num_classes_new )
+        # empty_weight[-1] = model_without_ddp.eos_coef
+        # model_without_ddp.register_buffer('empty_weight', empty_weight)
+        #model_without_ddp.load_state_dict(checkpoint['model'])
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
@@ -200,7 +241,7 @@ def main(args):
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
             # extra checkpoint before LR drop and every 100 epochs
-            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 100 == 0:
+            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 1 == 0:
                 checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
             for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({

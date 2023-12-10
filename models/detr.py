@@ -320,6 +320,7 @@ def build(args):
     backbone = build_backbone(args)
 
     transformer = build_transformer(args)
+    num_classes=2
 
     model = DETR(
         backbone,
